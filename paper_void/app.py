@@ -176,6 +176,7 @@ class PaperVoidApp:
 
         # Shared printer/settings variables
         self.var_conn_mode = tk.StringVar(value="direct_ble")
+        self.var_unlock_conn_mode = tk.StringVar(value="usb")
         self.var_ble_mac = tk.StringVar(value="F1:8B:B4:28:3E:99")
         self.var_tailscale_ip = tk.StringVar(value=auto_detect_phone_ip())
         self.var_bridge_url = tk.StringVar(value=printer_ble.DEFAULT_BRIDGE_URL)
@@ -796,12 +797,12 @@ class PaperVoidApp:
         r2_conn.pack(fill=tk.X, pady=(0, 8))
         tk.Label(r2_conn, text=i18n.t("unlock_conn_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         tk.Radiobutton(
-            r2_conn, text=i18n.t("unlock_conn_usb", self.lang), variable=self.var_conn_mode, value="usb",
+            r2_conn, text=i18n.t("unlock_conn_usb", self.lang), variable=self.var_unlock_conn_mode, value="usb",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(8, 10))
         tk.Radiobutton(
-            r2_conn, text=i18n.t("unlock_conn_tailscale", self.lang), variable=self.var_conn_mode, value="tailscale",
+            r2_conn, text=i18n.t("unlock_conn_tailscale", self.lang), variable=self.var_unlock_conn_mode, value="tailscale",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
@@ -1163,7 +1164,10 @@ class PaperVoidApp:
         ip = auto_detect_phone_ip()
         if ip:
             self.var_tailscale_ip.set(ip)
-            self.var_conn_mode.set("tailscale")
+            if self._current_page == "unlock":
+                self.var_unlock_conn_mode.set("tailscale")
+            else:
+                self.var_conn_mode.set("tailscale")
             self.set_toast(f"Đã tự dò được IP điện thoại: {ip}")
             self._update_conn_mode_ui()
 
@@ -1250,10 +1254,13 @@ class PaperVoidApp:
         self.set_toast(f"Đã ghép nối trực tiếp Bluetooth PC tới {dev.name} ({dev.address})!", STATUS_GREEN)
         self._refresh_controls()
 
-    def _resolve_bridge_url(self) -> str:
-        mode = self.var_conn_mode.get()
-        if mode in ("direct_ble", "ble"):
-            mode = "tailscale" if self.var_tailscale_ip.get().strip() else "usb"
+    def _resolve_bridge_url(self, for_unlock: bool = False) -> str:
+        if for_unlock:
+            mode = self.var_unlock_conn_mode.get()
+        else:
+            mode = self.var_conn_mode.get()
+            if mode in ("direct_ble", "ble"):
+                mode = "tailscale" if self.var_tailscale_ip.get().strip() else "usb"
         return printer_ble.build_bridge_url(
             mode,
             self.var_tailscale_ip.get(),
@@ -1263,7 +1270,7 @@ class PaperVoidApp:
         if self._busy():
             return
         try:
-            url = self._resolve_bridge_url()
+            url = self._resolve_bridge_url(for_unlock=False)
         except Exception as exc:
             messagebox.showwarning("Thiếu thông tin kết nối", str(exc), parent=self.root)
             return
@@ -1333,7 +1340,7 @@ class PaperVoidApp:
             self._refresh_controls()
             return
         try:
-            url = self._resolve_bridge_url()
+            url = self._resolve_bridge_url(for_unlock=False)
         except Exception as exc:
             messagebox.showwarning("Thiếu thông tin kết nối", str(exc), parent=self.root)
             return
@@ -1619,7 +1626,7 @@ class PaperVoidApp:
         if self._busy():
             return
         try:
-            url = self._resolve_bridge_url()
+            url = self._resolve_bridge_url(for_unlock=True)
         except Exception as exc:
             messagebox.showwarning("Thiếu thông tin kết nối", str(exc), parent=self.root)
             return

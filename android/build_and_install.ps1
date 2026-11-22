@@ -72,12 +72,31 @@ $SignedApk = Join-Path $BuildDir "TinyPrintBridge.apk"
 & (Join-Path $BuildTools "apksigner.bat") sign --ks $Keystore --ks-pass pass:android --key-pass pass:android --out $SignedApk $AlignedApk
 if ($LASTEXITCODE -ne 0) { throw "apksigner failed" }
 
-Write-Host "7) Installing APK via ADB..."
-$InstallOut = & $Adb install -r $SignedApk 2>&1
+Write-Host "7) Detecting ADB device..."
+$DevicesRaw = (& $Adb devices) | Where-Object { $_ -match "\tdevice$" }
+$TargetSerial = $null
+if ($DevicesRaw) {
+    # Prefer USB device (serial without colon/port)
+    $UsbDev = $DevicesRaw | Where-Object { $_ -notmatch ":\d+" } | Select-Object -First 1
+    if ($UsbDev) {
+        $TargetSerial = ($UsbDev -split "\s+")[0].Trim()
+    } else {
+        $TargetSerial = ($DevicesRaw[0] -split "\s+")[0].Trim()
+    }
+    Write-Host "Using target ADB device: $TargetSerial"
+}
+
+$AdbCmd = @()
+if ($TargetSerial) {
+    $AdbCmd = @("-s", $TargetSerial)
+}
+
+Write-Host "8) Installing APK via ADB..."
+$InstallOut = & $Adb @AdbCmd install -r $SignedApk 2>&1
 $InstallOut | Out-String | Write-Host
 if ($LASTEXITCODE -ne 0) { throw "adb install failed: $InstallOut" }
 
-Write-Host "8) Granting runtime permissions..."
+Write-Host "9) Granting runtime permissions..."
 $Perms = @(
     "android.permission.BLUETOOTH_SCAN",
     "android.permission.BLUETOOTH_CONNECT",
@@ -87,10 +106,11 @@ $Perms = @(
     "android.permission.CAMERA"
 )
 foreach ($perm in $Perms) {
-    & $Adb shell pm grant com.tinyprint.bridge $perm 2>&1 | Out-Null
+    & $Adb @AdbCmd shell pm grant com.tinyprint.bridge $perm 2>&1 | Out-Null
 }
 
-Write-Host "9) Launching BridgeActivity and forwarding tcp:9100..."
-& $Adb shell am start -n com.tinyprint.bridge/.BridgeActivity
-& $Adb forward tcp:9100 tcp:9100
+Write-Host "10) Starting BleBridgeService and forwarding tcp:9100..."
+& $Adb @AdbCmd shell am start-foreground-service -n com.tinyprint.bridge/.BleBridgeService
+& $Adb @AdbCmd shell am start -W -n com.tinyprint.bridge/.BridgeActivity
+& $Adb @AdbCmd forward tcp:9100 tcp:9100
 Write-Host "DONE! Bridge ready at http://127.0.0.1:9100"

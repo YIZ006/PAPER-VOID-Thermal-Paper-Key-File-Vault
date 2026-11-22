@@ -20,7 +20,9 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.util.Log;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -52,6 +54,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BleBridgeService extends Service {
+    private static final String TAG = "BleBridgeService";
     public static final String ACTION_STOP = "com.tinyprint.bridge.ACTION_STOP";
     private static final int PORT = 9100;
     private static final String CHANNEL_ID = "tinyprint_bridge";
@@ -209,10 +212,25 @@ public class BleBridgeService extends Service {
                         android.R.drawable.ic_menu_close_clear_cancel, "Tắt Bridge", stopPi
                 ).build())
                 .build();
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-        } else {
-            startForeground(1, notif);
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+                if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+                }
+                startForeground(1, notif, type);
+            } else if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+            } else {
+                startForeground(1, notif);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "startForeground typed failed, falling back: " + t.getMessage());
+            try {
+                startForeground(1, notif);
+            } catch (Throwable t2) {
+                Log.e(TAG, "startForeground fallback failed: " + t2.getMessage());
+            }
         }
     }
 
@@ -222,12 +240,14 @@ public class BleBridgeService extends Service {
         serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(PORT, 16, InetAddress.getByName("0.0.0.0"));
+                Log.i(TAG, "Bridge HTTP Server bound to 0.0.0.0:" + PORT);
                 while (running) {
                     Socket sock = serverSocket.accept();
                     new Thread(() -> handleClient(sock), "BridgeClient").start();
                 }
             } catch (IOException e) {
                 sLastError = "ServerSocket: " + e.getMessage();
+                Log.e(TAG, sLastError);
             }
         }, "BridgeServer");
         serverThread.start();

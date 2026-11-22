@@ -1176,6 +1176,35 @@ _ADB_EXE = os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.ex
 _FLOW_PAUSE_HEX = "5178ae0101001070ff"
 
 
+def _detect_adb_target_serial(host: Optional[str] = None) -> Optional[str]:
+    """Find appropriate adb target device serial when multiple devices are attached."""
+    adb = _ADB_EXE if os.path.exists(_ADB_EXE) else "adb"
+    try:
+        proc = subprocess.run(
+            [adb, "devices"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            env={**os.environ, "ADB_LIBUSB": "0"},
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip() and not line.startswith("List of")]
+        devices = [line.split()[0] for line in lines if "device" in line]
+        if not devices:
+            return None
+        if host:
+            clean_host = host.split(":")[0].strip()
+            for d in devices:
+                if clean_host in d:
+                    return d
+        usb_devs = [d for d in devices if ":" not in d]
+        if usb_devs:
+            return usb_devs[0]
+        return devices[0]
+    except Exception:
+        return None
+
+
 class HttpBridgePrinter:
     """
     HTTP BLE Bridge client compatible with TinyPrintBridge (`http://127.0.0.1:9100`).
@@ -1207,8 +1236,17 @@ class HttpBridgePrinter:
     def _run_adb(self, args: list[str], timeout: float = 6.0) -> None:
         adb = _ADB_EXE if os.path.exists(_ADB_EXE) else "adb"
         try:
+            cmd = [adb]
+            if not (args and args[0] == "-s"):
+                parsed = urllib.parse.urlparse(self.bridge_url)
+                host = parsed.hostname or ""
+                target_host = None if self._is_local_bridge() else host
+                target_serial = _detect_adb_target_serial(target_host)
+                if target_serial:
+                    cmd.extend(["-s", target_serial])
+            cmd.extend(args)
             subprocess.run(
-                [adb, *args],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
