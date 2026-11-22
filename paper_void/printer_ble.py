@@ -259,17 +259,24 @@ def decode_notify_firmware(data: Union[bytes, bytearray, str]) -> str:
 
 def detect_protocol(device_name: str, char_uuids: Iterable[str] = ()) -> str:
     """
-    Detect printer protocol family ('mxw01' or 'classic') from advertised name
+    Detect printer protocol family ('classic' or 'mxw01') from advertised name
     and/or discovered GATT characteristic UUIDs.
     """
-    for raw_uuid in char_uuids or ():
-        norm = str(raw_uuid).strip().lower()
-        if norm == CHAR_DATA_UUID or norm.startswith("0000ae03") or "ae03" in norm:
-            return "mxw01"
-
     upper_name = (device_name or "").strip().upper()
+    if any(upper_name.startswith(pfx) for pfx in ("X5", "CAT", "GB", "GT", "YT", "PD", "SC")):
+        return "classic"
     if "MXW" in upper_name:
         return "mxw01"
+
+    uuids_str = [str(u).lower() for u in (char_uuids or ())]
+    has_ae01 = any("ae01" in u for u in uuids_str)
+    has_ae03 = any("ae03" in u for u in uuids_str)
+
+    if has_ae01:
+        return "classic"
+    if has_ae03 and not has_ae01:
+        return "mxw01"
+
     return "classic"
 
 
@@ -956,12 +963,12 @@ class BleThermalPrinter:
         self,
         address: str,
         device_name: str = "",
-        protocol: str = "auto",
+        protocol: str = "classic",
         timeout: float = 12.0,
     ) -> None:
         self.address = str(address).strip()
         self.device_name = str(device_name or "").strip()
-        self.protocol_name = (protocol or "auto").strip().lower()
+        self.protocol_name = (protocol or "classic").strip().lower()
         self.timeout = float(timeout)
 
     async def print_ribbon(
@@ -1079,6 +1086,7 @@ class BleThermalPrinter:
                             response=step.write_with_response,
                         )
                         bytes_sent += len(chunk)
+                        await asyncio.sleep(0.015)
 
                     if step.rows_represented > 0:
                         prev_band = sent_rows // max(1, int(thermal_cooldown_rows)) if thermal_cooldown_rows > 0 else 0
@@ -1672,7 +1680,7 @@ def create_vault_printer(
                 )
             addr = devs[0].address
             printer_name = devs[0].name or printer_name
-        return BleThermalPrinter(address=addr, device_name=printer_name)
+        return BleThermalPrinter(address=addr, device_name=printer_name, protocol="classic")
     else:
         url = build_bridge_url(m, tailscale_ip=tailscale_ip, default_port=default_port)
         return HttpBridgePrinter(bridge_url=url)
