@@ -25,6 +25,8 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.net.wifi.WifiManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -82,6 +84,9 @@ public class BleBridgeService extends Service {
     private BluetoothGatt currentGatt;
     private BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic notifyChar;
+
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
     private volatile String serviceUuid = "";
     private volatile String writeUuid = "";
     private volatile String notifyUuid = "";
@@ -110,6 +115,22 @@ public class BleBridgeService extends Service {
             btAdapter = bm.getAdapter();
         }
         createNotificationChannel();
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TinyPrint:BridgeLock");
+                wakeLock.acquire(12 * 60 * 60 * 1000L);
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TinyPrint:WifiLock");
+                wifiLock.acquire();
+            }
+        } catch (Exception ignored) {
+        }
         startForegroundCompat("Listening on 0.0.0.0:" + PORT + " (USB + Tailscale)");
         startHttpServer();
     }
@@ -143,6 +164,14 @@ public class BleBridgeService extends Service {
         try {
             if (serverSocket != null) serverSocket.close();
         } catch (IOException ignored) {
+        }
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try { wakeLock.release(); } catch (Exception ignored) {}
+            wakeLock = null;
+        }
+        if (wifiLock != null && wifiLock.isHeld()) {
+            try { wifiLock.release(); } catch (Exception ignored) {}
+            wifiLock = null;
         }
         closeGatt();
         super.onDestroy();

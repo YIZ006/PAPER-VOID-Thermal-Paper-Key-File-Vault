@@ -1287,6 +1287,18 @@ class HttpBridgePrinter:
             pass
         return status
 
+    def _wake_phone_over_wifi(self, host: str) -> bool:
+        """Attempt to wake up Android app remotely via wireless ADB (port 5555)."""
+        if not self.auto_adb or not host:
+            return False
+        try:
+            self._run_adb(["connect", f"{host}:5555"])
+            self._run_adb(["-s", f"{host}:5555", "shell", "am", "start-foreground-service", "-n", "com.tinyprint.bridge/.BleBridgeService"])
+            self._run_adb(["-s", f"{host}:5555", "shell", "am", "start", "-n", "com.tinyprint.bridge/.BridgeActivity"])
+            return True
+        except Exception:
+            return False
+
     def ensure_service_ready(self, status_callback: Optional[Callable[[str], None]] = None) -> dict[str, Any]:
         """Ensure the phone HTTP bridge is reachable (via USB ADB or Tailscale IP) without requiring X5 BLE."""
         try:
@@ -1298,9 +1310,24 @@ class HttpBridgePrinter:
                 res = self._bootstrap_local_bridge()
                 if res is not None:
                     return res
+            elif self.auto_adb and not self._is_local_bridge():
+                parsed = urllib.parse.urlparse(self.bridge_url)
+                host = parsed.hostname or ""
+                if host:
+                    if status_callback:
+                        status_callback(f"Đang gửi lệnh tự bật app từ xa tới {host}…")
+                    self._wake_phone_over_wifi(host)
+                    for _ in range(5):
+                        time.sleep(0.4)
+                        try:
+                            res = self._http_req("GET", "/status", timeout=2.0)
+                            if isinstance(res, dict):
+                                return res
+                        except Exception:
+                            continue
             raise PrinterDriverError(
                 f"Không kết nối được điện thoại tại {self.bridge_url}. "
-                "Nếu dùng cáp USB hãy kiểm tra USB Debugging; nếu dùng Tailscale hãy bật app TinyPrintBridge trên ĐT và nhập đúng IP Tailscale."
+                "Nếu dùng không dây, hãy chạm vào app TinyPrintBridge trên điện thoại một lần (hoặc cắm cáp USB để máy tính tự động bật)."
             )
 
     def start_phone_scanner(self, status_callback: Optional[Callable[[str], None]] = None) -> None:
@@ -1312,9 +1339,14 @@ class HttpBridgePrinter:
             self._http_req("POST", "/scanner/start", body=b"", timeout=5.0)
         except Exception:
             pass
-        # On FlymeOS/Android 12+, background startActivity may be throttled; also trigger via ADB when local USB
+        # On FlymeOS/Android 12+, background startActivity may be throttled; also trigger via ADB
         if self.auto_adb and self._is_local_bridge():
             self._run_adb(["shell", "am", "start", "-n", "com.tinyprint.bridge/.ScannerActivity"])
+        elif self.auto_adb and not self._is_local_bridge():
+            parsed = urllib.parse.urlparse(self.bridge_url)
+            host = parsed.hostname or ""
+            if host:
+                self._run_adb(["-s", f"{host}:5555", "shell", "am", "start", "-n", "com.tinyprint.bridge/.ScannerActivity"])
 
     def fetch_scanner_frame(self, timeout: float = 3.0) -> tuple[bytes, int, bool]:
         """Fetch latest JPEG frame from phone ScannerActivity (`GET /scanner/frame`)."""

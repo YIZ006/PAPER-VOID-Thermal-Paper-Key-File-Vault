@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -24,6 +26,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Optional
 
 import numpy as np
+from PIL import Image, ImageTk
 
 import codec
 import printer_ble
@@ -88,6 +91,48 @@ def format_bytes(n: float) -> str:
     return f"{value:.2f} GB"
 
 
+def get_asset_path(filename: str) -> str:
+    base = getattr(sys, "_MEIPASS", None)
+    if base and os.path.isfile(os.path.join(base, "assets", filename)):
+        return os.path.join(base, "assets", filename)
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "..", "assets", filename),
+        os.path.join(here, "assets", filename),
+        os.path.join(os.getcwd(), "assets", filename),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return ""
+
+
+def auto_detect_phone_ip() -> str:
+    try:
+        ts_exe = r"C:\Program Files\Tailscale\tailscale.exe"
+        if not os.path.isfile(ts_exe):
+            ts_exe = "tailscale"
+        out = subprocess.check_output([ts_exe, "status"], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            low = line.lower()
+            if "android" in low or "meizu" in low or "phone" in low:
+                parts = line.split()
+                if parts:
+                    return parts[0]
+    except Exception:
+        pass
+    try:
+        adb_bin = printer_ble._find_adb_binary()
+        if adb_bin:
+            out = subprocess.check_output([adb_bin, "devices"], text=True, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                if ":5555" in line and "device" in line:
+                    return line.split(":")[0].strip()
+    except Exception:
+        pass
+    return "100.127.161.92"
+
+
 @dataclass
 class VaultSessionItem:
     source_path: str
@@ -131,7 +176,7 @@ class PaperVoidApp:
 
         # Shared printer/settings variables
         self.var_conn_mode = tk.StringVar(value="usb")
-        self.var_tailscale_ip = tk.StringVar(value="")
+        self.var_tailscale_ip = tk.StringVar(value=auto_detect_phone_ip())
         self.var_bridge_url = tk.StringVar(value=printer_ble.DEFAULT_BRIDGE_URL)
         self.var_printer_name = tk.StringVar(value="X5")
         self.var_energy = tk.IntVar(value=20000)
@@ -157,6 +202,22 @@ class PaperVoidApp:
         self.root.geometry("1040x680")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_WINDOW)
+
+        # Load Pair 5 desktop app icon for window title bar & taskbar
+        icon_file = get_asset_path("icon_desktop.png")
+        if icon_file and os.path.isfile(icon_file):
+            try:
+                img = Image.open(icon_file)
+                self._app_icon_img = ImageTk.PhotoImage(img.resize((32, 32), Image.Resampling.LANCZOS))
+                self.root.iconphoto(True, self._app_icon_img)
+                self._brand_icon_img = ImageTk.PhotoImage(img.resize((28, 28), Image.Resampling.LANCZOS))
+            except Exception:
+                self._app_icon_img = None
+                self._brand_icon_img = None
+        else:
+            self._app_icon_img = None
+            self._brand_icon_img = None
+
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
@@ -306,10 +367,13 @@ class PaperVoidApp:
         brand = tk.Frame(self.sidebar, bg=BG_SIDEBAR, pady=14, padx=16)
         brand.pack(fill=tk.X)
 
-        logo = tk.Canvas(brand, width=28, height=28, bg=BG_SIDEBAR, highlightthickness=0)
-        logo.pack(side=tk.LEFT, padx=(0, 8))
-        logo.create_polygon(4, 10, 14, 3, 24, 10, 14, 17, fill="#2DD4BF", outline="")
-        logo.create_polygon(4, 18, 14, 11, 24, 18, 14, 25, fill="#3B82F6", outline="")
+        if getattr(self, "_brand_icon_img", None) is not None:
+            tk.Label(brand, image=self._brand_icon_img, bg=BG_SIDEBAR).pack(side=tk.LEFT, padx=(0, 8))
+        else:
+            logo = tk.Canvas(brand, width=28, height=28, bg=BG_SIDEBAR, highlightthickness=0)
+            logo.pack(side=tk.LEFT, padx=(0, 8))
+            logo.create_polygon(4, 10, 14, 3, 24, 10, 14, 17, fill="#15803D", outline="")
+            logo.create_polygon(4, 18, 14, 11, 24, 18, 14, 25, fill="#1E293B", outline="")
 
         tk.Label(
             brand, text="PAPER-VOID", bg=BG_SIDEBAR, fg=FG_PRIMARY,
@@ -739,10 +803,15 @@ class PaperVoidApp:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
         tk.Entry(
-            r2_conn, textvariable=self.var_tailscale_ip, width=18,
+            r2_conn, textvariable=self.var_tailscale_ip, width=16,
             bg=BG_INPUT, fg=FG_PRIMARY, relief=tk.FLAT,
             highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
         ).pack(side=tk.LEFT, ipady=3)
+        tk.Button(
+            r2_conn, text="⚡ Dò IP", command=self.on_click_detect_ip,
+            bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
+            relief=tk.SOLID, bd=1, font=("Segoe UI", 8, "bold"), padx=6, pady=1, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(4, 4))
         tk.Label(r2_conn, text=i18n.t("unlock_tailscale_hint", self.lang), bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 8)).pack(side=tk.LEFT)
 
         r2a = tk.Frame(c2, bg=BG_CARD)
@@ -944,9 +1013,14 @@ class PaperVoidApp:
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
         tk.Entry(
-            r2, textvariable=self.var_tailscale_ip, width=18, bg=BG_INPUT, fg=FG_PRIMARY,
+            r2, textvariable=self.var_tailscale_ip, width=16, bg=BG_INPUT, fg=FG_PRIMARY,
             relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
-        ).pack(side=tk.LEFT, padx=(0, 16), ipady=4)
+        ).pack(side=tk.LEFT, ipady=4)
+        tk.Button(
+            r2, text="⚡ Dò IP", command=self.on_click_detect_ip,
+            bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
+            relief=tk.SOLID, bd=1, font=("Segoe UI", 8, "bold"), padx=6, pady=1, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(4, 12))
 
         tk.Label(r2, text=i18n.t("printer_name_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         tk.Entry(
@@ -1031,6 +1105,13 @@ class PaperVoidApp:
             self.set_toast("Đang dừng tác vụ an toàn…", STATUS_AMBER)
 
     # ------------------------------------------------------------------ Phone Bridge Connect
+
+    def on_click_detect_ip(self) -> None:
+        ip = auto_detect_phone_ip()
+        if ip:
+            self.var_tailscale_ip.set(ip)
+            self.var_conn_mode.set("tailscale")
+            self.set_toast(f"Đã tự dò được IP điện thoại: {ip}")
 
     def _resolve_bridge_url(self) -> str:
         return printer_ble.build_bridge_url(
