@@ -1,0 +1,46 @@
+# Personal logs & chat history (NEVER commit)
+CHAT_HISTORY.md
+*.log
+
+# Unrelated local experiments & personal print history
+cat-printer/
+studio/
+pc/
+start_cat_printer.ps1
+start_tinyprint_studio.ps1
+
+# Build outputs & packaged binaries (publish via GitHub Releases instead)
+android/build/
+paper_void/build/
+paper_void/dist/
+paper_void/PAPER-VOID.spec
+*.apk
+*.exe
+*.aab
+*.dex
+*.class
+
+# Signing keystores & secrets
+*.keystore
+*.jks
+*.pem
+*.key
+.env
+.env.*
+
+# Vault & test artifacts
+*.pvvault
+*.pvvault.part
+*_keycard.png
+
+# Python & IDE caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
