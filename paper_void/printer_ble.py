@@ -1121,6 +1121,47 @@ class BleThermalPrinter:
         """Convenience alias for `print_ribbon()`."""
         return await self.print_ribbon(image, **kwargs)
 
+    def print_ribbon_sync(
+        self,
+        ribbon_img: Union[np.ndarray, Image.Image],
+        *,
+        energy: int = 20000,
+        speed: int = 30,
+        blackening: int = ClassicCatPrinterProtocol.BLACKENING_DARK,
+        draw_mode: int = ClassicCatPrinterProtocol.DRAW_MODE_TEXT,
+        feed_lines: int = 72,
+        band_rows: int = 64,
+        band_cooldown_s: float = 0.28,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        cancel_event: Optional[Union[threading.Event, Callable[[], bool]]] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
+    ) -> PrintResult:
+        """
+        Synchronous wrapper for print_ribbon() designed to be executed inside
+        background worker threads.
+        """
+        return asyncio.run(
+            self.print_ribbon(
+                ribbon_img,
+                energy=energy,
+                speed=speed,
+                blackening=blackening,
+                draw_mode=draw_mode,
+                feed_lines=feed_lines,
+                thermal_cooldown_rows=band_rows,
+                thermal_cooldown_s=band_cooldown_s,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+                status_callback=status_callback,
+                **kwargs,
+            )
+        )
+
+    def print_image_sync(self, image: Union[np.ndarray, Image.Image], **kwargs: Any) -> PrintResult:
+        """Convenience alias for synchronous `print_ribbon_sync()`."""
+        return self.print_ribbon_sync(image, **kwargs)
+
 
 DEFAULT_BRIDGE_URL = os.environ.get("TINYPRINT_BRIDGE_URL", "http://127.0.0.1:9100").rstrip("/")
 _ADB_EXE = os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe")
@@ -1393,23 +1434,6 @@ class HttpBridgePrinter:
                 self._run_adb(["shell", "am", "force-stop", "com.tinyprint.bridge"])
             self._restore_return_activity()
 
-
-def build_bridge_url(mode: str, tailscale_ip: str = "", default_port: int = 9100) -> str:
-    """Resolve bridge HTTP URL from connection mode ('usb' or 'tailscale')."""
-    if (mode or "usb").strip().lower() == "usb":
-        return f"http://127.0.0.1:{default_port}"
-    raw = (tailscale_ip or "").strip()
-    if not raw:
-        raise PrinterDriverError("Vui lòng nhập IP Tailscale của điện thoại (ví dụ: 100.x.y.z).")
-    if not raw.startswith(("http://", "https://")):
-        raw = "http://" + raw
-    parsed = urllib.parse.urlparse(raw)
-    host = parsed.hostname or ""
-    if not host:
-        raise PrinterDriverError(f"IP Tailscale không hợp lệ: {tailscale_ip!r}")
-    port = parsed.port or default_port
-    return f"{parsed.scheme}://{host}:{port}"
-
     def _wait_if_flow_paused(self, last_notify_hex: str, cancel_event: Any) -> None:
         if (last_notify_hex or "").lower() != _FLOW_PAUSE_HEX:
             return
@@ -1541,6 +1565,117 @@ def build_bridge_url(mode: str, tailscale_ip: str = "", default_port: int = 9100
             last_notify_hex=last_notify,
             firmware=decode_notify_firmware(last_notify),
         )
+
+
+def build_bridge_url(mode: str, tailscale_ip: str = "", default_port: int = 9100) -> str:
+    """Resolve bridge HTTP URL from connection mode ('usb' or 'tailscale')."""
+    if (mode or "usb").strip().lower() == "usb":
+        return f"http://127.0.0.1:{default_port}"
+    raw = (tailscale_ip or "").strip()
+    if not raw:
+        raise PrinterDriverError("Vui lòng nhập IP Tailscale của điện thoại (ví dụ: 100.x.y.z).")
+    if not raw.startswith(("http://", "https://")):
+        raw = "http://" + raw
+    parsed = urllib.parse.urlparse(raw)
+    host = parsed.hostname or ""
+    if not host:
+        raise PrinterDriverError(f"IP Tailscale không hợp lệ: {tailscale_ip!r}")
+    port = parsed.port or default_port
+    return f"{parsed.scheme}://{host}:{port}"
+
+
+async def probe_direct_ble(
+    address: str = "",
+    name_hint: str = "X5",
+    timeout: float = 6.0,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> BlePrinterDevice:
+    """
+    Search and verify direct BLE connection to a thermal printer from PC.
+    If address is empty or 'auto', scans for nearby printers matching name_hint/prefixes.
+    """
+    target_addr = (address or "").strip()
+    target_name = (name_hint or "").strip()
+
+    if not target_addr or target_addr.lower() == "auto":
+        if status_callback:
+            status_callback("Đang quét tìm máy in BLE quanh máy tính...")
+        devices = await scan_ble_printers(timeout=timeout)
+        if not devices:
+            raise PrinterDriverError("Không tìm thấy máy in BLE nào quanh máy tính. Hãy bật nguồn máy in X5.")
+        chosen = devices[0]
+        target_addr = chosen.address
+        target_name = chosen.name
+    else:
+        chosen = BlePrinterDevice(name=target_name or "X5", address=target_addr, protocol_hint=detect_protocol(target_name))
+
+    if status_callback:
+        status_callback(f"Đang kiểm tra kết nối Bluetooth PC tới {target_name} ({target_addr})...")
+
+    if not HAS_BLEAK or BleakClient is None:
+        raise PrinterDriverError("Thư viện bleak chưa sẵn sàng trên hệ thống.")
+
+    async with BleakClient(target_addr, timeout=timeout) as client:
+        if not client.is_connected:
+            raise PrinterDriverError(f"Không thể kết nối Bluetooth tới máy in {target_addr}.")
+        # Send 0-paper ping 0xA8 to verify 2-way BLE
+        ping = ClassicCatPrinterProtocol.make_ping_cmd()
+        char_uuids = _extract_char_uuids(client)
+        write_uuid = "0000ae01-0000-1000-8000-00805f9b34fb"
+        for u in char_uuids:
+            if "ae01" in u:
+                write_uuid = u
+                break
+        await client.write_gatt_char(write_uuid, ping, response=False)
+
+    return chosen
+
+
+def probe_direct_ble_sync(
+    address: str = "",
+    name_hint: str = "X5",
+    timeout: float = 6.0,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> BlePrinterDevice:
+    """Synchronous wrapper for probe_direct_ble."""
+    return asyncio.run(
+        probe_direct_ble(
+            address=address,
+            name_hint=name_hint,
+            timeout=timeout,
+            status_callback=status_callback,
+        )
+    )
+
+
+def create_vault_printer(
+    mode: str,
+    *,
+    tailscale_ip: str = "",
+    ble_address: str = "",
+    printer_name: str = "X5",
+    default_port: int = 9100,
+) -> Union[BleThermalPrinter, HttpBridgePrinter]:
+    """
+    Factory returning either a BleThermalPrinter (direct PC BLE) or an
+    HttpBridgePrinter (phone bridge via USB or Tailscale). Both provide print_ribbon_sync().
+    """
+    m = (mode or "direct_ble").strip().lower()
+    if m in ("direct_ble", "ble", "pc_bluetooth", "direct"):
+        addr = (ble_address or "").strip()
+        if not addr or addr.lower() == "auto":
+            devs = asyncio.run(scan_ble_printers(timeout=4.0))
+            if not devs:
+                raise PrinterDriverError(
+                    "Không tìm thấy máy in BLE nào quanh máy tính. "
+                    "Hãy bật nguồn máy in X5 hoặc dùng cầu nối điện thoại."
+                )
+            addr = devs[0].address
+            printer_name = devs[0].name or printer_name
+        return BleThermalPrinter(address=addr, device_name=printer_name)
+    else:
+        url = build_bridge_url(m, tailscale_ip=tailscale_ip, default_port=default_port)
+        return HttpBridgePrinter(bridge_url=url)
 
 
 def show_ram_preview(

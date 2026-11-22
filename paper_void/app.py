@@ -175,7 +175,8 @@ class PaperVoidApp:
         self._shred_queue: list[str] = []
 
         # Shared printer/settings variables
-        self.var_conn_mode = tk.StringVar(value="usb")
+        self.var_conn_mode = tk.StringVar(value="direct_ble")
+        self.var_ble_mac = tk.StringVar(value="F1:8B:B4:28:3E:99")
         self.var_tailscale_ip = tk.StringVar(value=auto_detect_phone_ip())
         self.var_bridge_url = tk.StringVar(value=printer_ble.DEFAULT_BRIDGE_URL)
         self.var_printer_name = tk.StringVar(value="X5")
@@ -325,7 +326,9 @@ class PaperVoidApp:
         for k, (_, lbl, _) in self._nav_rows.items():
             lbl.configure(text=f"  {icons.get(k, '')}   {nav_labels.get(k, '')}")
 
-        self.btn_quick_connect.configure(text=i18n.t("btn_turn_on_bridge", self.lang))
+        mode = self.var_conn_mode.get()
+        btn_txt = i18n.t("printer_btn_connect_direct", self.lang) if mode in ("direct_ble", "ble") else i18n.t("printer_btn_connect_bridge", self.lang)
+        self.btn_quick_connect.configure(text=btn_txt)
         self.btn_quick_stop.configure(text=i18n.t("btn_turn_off_bridge", self.lang))
         self.lbl_sidebar_tagline.configure(text=i18n.t("sidebar_tagline", self.lang))
         self.btn_cancel_job.configure(text=i18n.t("btn_cancel_job", self.lang))
@@ -461,8 +464,8 @@ class PaperVoidApp:
 
         self.btn_quick_connect = tk.Button(
             foot,
-            text=i18n.t("btn_turn_on_bridge", self.lang),
-            command=self.connect_phone_bridge,
+            text=i18n.t("printer_btn_connect_direct", self.lang),
+            command=self.connect_printer,
             bg=ACCENT_BLUE,
             fg="#FFFFFF",
             activebackground=ACCENT_BLUE_HOVER,
@@ -983,16 +986,18 @@ class PaperVoidApp:
         r1_top.pack(fill=tk.X)
         tk.Label(r1_top, text=i18n.t("printer_conn_section", self.lang), bg=BG_CARD, fg=FG_PRIMARY,
                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
-        tk.Button(
+        self.btn_page_disconnect = tk.Button(
             r1_top, text=i18n.t("btn_turn_off_bridge", self.lang), command=self.stop_phone_bridge,
             bg=DANGER_RED, fg="#FFFFFF", activebackground="#991B1B", activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=12, pady=6, cursor="hand2",
-        ).pack(side=tk.RIGHT, padx=(6, 0))
-        tk.Button(
-            r1_top, text=i18n.t("btn_turn_on_bridge", self.lang), command=self.connect_phone_bridge,
+        )
+        self.btn_page_disconnect.pack(side=tk.RIGHT, padx=(6, 0))
+        self.btn_page_connect = tk.Button(
+            r1_top, text=i18n.t("printer_btn_connect_direct", self.lang), command=self.connect_printer,
             bg=ACCENT_BLUE, fg="#FFFFFF", activebackground=ACCENT_BLUE_HOVER, activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=14, pady=6, cursor="hand2",
-        ).pack(side=tk.RIGHT)
+        )
+        self.btn_page_connect.pack(side=tk.RIGHT)
 
         self.var_printer_detail = tk.StringVar(value=i18n.t("printer_status_disconnected", self.lang))
         tk.Label(
@@ -1000,33 +1005,56 @@ class PaperVoidApp:
             font=("Segoe UI", 9), anchor="w", justify=tk.LEFT, wraplength=700,
         ).pack(fill=tk.X, pady=(8, 4))
 
+        # Row 2: Direct PC Bluetooth (BLE)
         r2 = tk.Frame(c1, bg=BG_CARD)
         r2.pack(fill=tk.X, pady=(8, 0))
         tk.Radiobutton(
-            r2, text=i18n.t("printer_conn_usb", self.lang), variable=self.var_conn_mode, value="usb",
+            r2, text=i18n.t("printer_conn_direct_ble", self.lang), variable=self.var_conn_mode, value="direct_ble",
+            command=self._update_conn_mode_ui,
+            bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(r2, text=i18n.t("printer_ble_mac_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Entry(
+            r2, textvariable=self.var_ble_mac, width=19, bg=BG_INPUT, fg=FG_PRIMARY,
+            relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
+        ).pack(side=tk.LEFT, padx=(4, 4), ipady=4)
+        tk.Button(
+            r2, text=i18n.t("printer_btn_scan_ble", self.lang), command=self.on_click_scan_ble,
+            bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
+            relief=tk.SOLID, bd=1, font=("Segoe UI", 8, "bold"), padx=6, pady=1, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 14))
+
+        tk.Label(r2, text=i18n.t("printer_name_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Entry(
+            r2, textvariable=self.var_printer_name, width=8, bg=BG_INPUT, fg=FG_PRIMARY,
+            relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
+        ).pack(side=tk.LEFT, padx=4, ipady=4)
+
+        # Row 3: Phone Bridge (USB ADB & Tailscale)
+        r3 = tk.Frame(c1, bg=BG_CARD)
+        r3.pack(fill=tk.X, pady=(8, 0))
+        tk.Radiobutton(
+            r3, text=i18n.t("printer_conn_usb", self.lang), variable=self.var_conn_mode, value="usb",
+            command=self._update_conn_mode_ui,
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 12))
         tk.Radiobutton(
-            r2, text=i18n.t("printer_conn_tailscale", self.lang), variable=self.var_conn_mode, value="tailscale",
+            r3, text=i18n.t("printer_conn_tailscale", self.lang), variable=self.var_conn_mode, value="tailscale",
+            command=self._update_conn_mode_ui,
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
         tk.Entry(
-            r2, textvariable=self.var_tailscale_ip, width=16, bg=BG_INPUT, fg=FG_PRIMARY,
+            r3, textvariable=self.var_tailscale_ip, width=16, bg=BG_INPUT, fg=FG_PRIMARY,
             relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
         ).pack(side=tk.LEFT, ipady=4)
         tk.Button(
-            r2, text="⚡ Dò IP", command=self.on_click_detect_ip,
+            r3, text="⚡ Dò IP", command=self.on_click_detect_ip,
             bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
             relief=tk.SOLID, bd=1, font=("Segoe UI", 8, "bold"), padx=6, pady=1, cursor="hand2",
         ).pack(side=tk.LEFT, padx=(4, 12))
-
-        tk.Label(r2, text=i18n.t("printer_name_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        tk.Entry(
-            r2, textvariable=self.var_printer_name, width=10, bg=BG_INPUT, fg=FG_PRIMARY,
-            relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
-        ).pack(side=tk.LEFT, padx=6, ipady=4)
 
         # Card 2: Thermal safety controls
         c2 = tk.Frame(page, bg=BG_CARD, highlightbackground=BORDER_CARD, highlightthickness=1, padx=14, pady=14)
@@ -1053,6 +1081,23 @@ class PaperVoidApp:
         self.scale_speed.set(30)
         self.scale_speed.pack(side=tk.LEFT, padx=8)
         self.lbl_speed.pack(side=tk.LEFT)
+
+        btn_test_row = tk.Frame(c2, bg=BG_CARD)
+        btn_test_row.pack(fill=tk.X, pady=(12, 0))
+        tk.Button(
+            btn_test_row,
+            text=i18n.t("printer_btn_test", self.lang),
+            command=self.print_test_strip,
+            bg="#FFFFFF",
+            fg=FG_PRIMARY,
+            activebackground="#FFFFCC",
+            relief=tk.SOLID,
+            bd=1,
+            font=("Segoe UI", 9, "bold"),
+            padx=14,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
 
         return page
 
@@ -1104,7 +1149,15 @@ class PaperVoidApp:
             self._job_cancel.set()
             self.set_toast("Đang dừng tác vụ an toàn…", STATUS_AMBER)
 
-    # ------------------------------------------------------------------ Phone Bridge Connect
+    # ------------------------------------------------------------------ Printer & Bridge Connect
+
+    def _update_conn_mode_ui(self, *args: Any) -> None:
+        mode = self.var_conn_mode.get()
+        btn_txt = i18n.t("printer_btn_connect_direct", self.lang) if mode in ("direct_ble", "ble") else i18n.t("printer_btn_connect_bridge", self.lang)
+        if hasattr(self, "btn_quick_connect"):
+            self.btn_quick_connect.configure(text=btn_txt)
+        if hasattr(self, "btn_page_connect"):
+            self.btn_page_connect.configure(text=btn_txt)
 
     def on_click_detect_ip(self) -> None:
         ip = auto_detect_phone_ip()
@@ -1112,10 +1165,97 @@ class PaperVoidApp:
             self.var_tailscale_ip.set(ip)
             self.var_conn_mode.set("tailscale")
             self.set_toast(f"Đã tự dò được IP điện thoại: {ip}")
+            self._update_conn_mode_ui()
+
+    def on_click_scan_ble(self) -> None:
+        if self._busy():
+            return
+        self.set_toast("Đang quét tìm máy in BLE quanh máy tính…", ACCENT_BLUE)
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+
+        def worker() -> None:
+            try:
+                import asyncio
+                devs = asyncio.run(printer_ble.scan_ble_printers(timeout=4.5))
+                self.post_event("ble_scan_done", devs)
+            except Exception as exc:
+                self.post_event("bridge_err", f"Lỗi quét BLE: {exc}")
+
+        self._job_thread = threading.Thread(target=worker, name="pv-ble-scan", daemon=True)
+        self._job_thread.start()
+        self._refresh_controls()
+
+    def _ev_ble_scan_done(self, devs: list[Any]) -> None:
+        self._job_thread = None
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=100)
+        if not devs:
+            self.set_toast("Không tìm thấy máy in BLE nào quanh máy tính. Hãy bật nguồn X5.", STATUS_AMBER)
+            messagebox.showinfo("Quét BLE", "Không tìm thấy máy in BLE nào quanh máy tính. Hãy bật nguồn máy in X5.", parent=self.root)
+            return
+        first = devs[0]
+        self.var_ble_mac.set(first.address)
+        self.var_printer_name.set(first.name)
+        self.var_conn_mode.set("direct_ble")
+        names_str = ", ".join(f"{d.name} ({d.address})" for d in devs)
+        self.set_toast(f"Đã tìm thấy {len(devs)} máy in BLE: {names_str}", STATUS_GREEN)
+        self._update_conn_mode_ui()
+
+    def connect_printer(self) -> None:
+        if self._busy():
+            return
+        mode = self.var_conn_mode.get()
+        if mode in ("direct_ble", "ble"):
+            self.connect_direct_ble()
+        else:
+            self.connect_phone_bridge()
+
+    def connect_direct_ble(self) -> None:
+        if self._busy():
+            return
+        mac = self.var_ble_mac.get().strip()
+        pname = self.var_printer_name.get().strip() or "X5"
+        self.set_toast(f"Đang kết nối Bluetooth PC trực tiếp tới {pname}…", ACCENT_BLUE)
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+
+        def worker() -> None:
+            try:
+                dev = printer_ble.probe_direct_ble_sync(
+                    address=mac,
+                    name_hint=pname,
+                    status_callback=lambda msg: self.post_event("toast", (msg, ACCENT_BLUE)),
+                )
+                self.post_event("ble_direct_ok", dev)
+            except Exception as exc:
+                self.post_event("bridge_err", str(exc))
+
+        self._job_thread = threading.Thread(target=worker, name="pv-ble-direct", daemon=True)
+        self._job_thread.start()
+        self._refresh_controls()
+
+    def _ev_ble_direct_ok(self, dev: printer_ble.BlePrinterDevice) -> None:
+        self._job_thread = None
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=100)
+        self._bridge_connected = True
+        self._bridge_printer_name = dev.name
+        self.var_ble_mac.set(dev.address)
+        self.var_sidebar_status.set(f"● {dev.name}: PC BLE (Sẵn sàng)")
+        self.lbl_sidebar_status.configure(bg=STATUS_GREEN_BG, fg=STATUS_GREEN)
+        self.var_printer_detail.set(
+            f"● Trực tiếp Bluetooth PC tới máy in: {dev.name} ({dev.address}, RSSI={dev.rssi or '?'} dBm) — Sẵn sàng in!"
+        )
+        self.set_toast(f"Đã ghép nối trực tiếp Bluetooth PC tới {dev.name} ({dev.address})!", STATUS_GREEN)
+        self._refresh_controls()
 
     def _resolve_bridge_url(self) -> str:
+        mode = self.var_conn_mode.get()
+        if mode in ("direct_ble", "ble"):
+            mode = "tailscale" if self.var_tailscale_ip.get().strip() else "usb"
         return printer_ble.build_bridge_url(
-            self.var_conn_mode.get(),
+            mode,
             self.var_tailscale_ip.get(),
         )
 
@@ -1178,8 +1318,19 @@ class PaperVoidApp:
         self._refresh_controls()
 
     def stop_phone_bridge(self) -> None:
-        """Stop TinyPrintBridge completely on the Android phone (via USB ADB or Tailscale)."""
+        """Stop TinyPrintBridge completely on the Android phone or disconnect direct BLE."""
         if self._busy():
+            return
+        mode = self.var_conn_mode.get()
+        if mode in ("direct_ble", "ble"):
+            self._bridge_connected = False
+            self.progress.stop()
+            self.progress.configure(mode="determinate", value=0)
+            self.var_sidebar_status.set("○ X5: Chưa kết nối")
+            self.lbl_sidebar_status.configure(bg="#EAEAEF", fg=FG_MUTED)
+            self.var_printer_detail.set("Trạng thái: Chưa kết nối máy in Bluetooth PC.")
+            self.set_toast("Đã ngắt trạng thái kết nối máy in PC.", STATUS_AMBER)
+            self._refresh_controls()
             return
         try:
             url = self._resolve_bridge_url()
@@ -1315,28 +1466,35 @@ class PaperVoidApp:
     def print_vault_item(self, idx: int, copies: int = 1) -> None:
         if self._busy() or not (0 <= idx < len(self._vault_items)):
             return
-        try:
-            url = self._resolve_bridge_url()
-        except Exception as exc:
-            messagebox.showwarning("Thiếu thông tin kết nối", str(exc), parent=self.root)
-            return
+        mode = self.var_conn_mode.get()
+        tailscale_ip = self.var_tailscale_ip.get()
+        ble_mac = self.var_ble_mac.get()
+        pname = self.var_printer_name.get().strip() or "X5"
+
         item = self._vault_items[idx]
         energy = int(self.var_energy.get())
         speed = int(self.var_speed.get())
         self._job_cancel.clear()
         self.progress.configure(mode="determinate", maximum=100, value=0)
-        self.set_toast(f"Đang in {copies} thẻ khóa (~8.4 cm) qua app điện thoại…", ACCENT_BLUE)
+
+        target_desc = f"trực tiếp PC BLE ({ble_mac})" if mode in ("direct_ble", "ble") else "qua app điện thoại"
+        self.set_toast(f"Đang in {copies} thẻ khóa (~8.4 cm) {target_desc}…", ACCENT_BLUE)
 
         def worker() -> None:
             img_copy = np.ascontiguousarray(item.result.card_image.copy())
             try:
-                bridge = printer_ble.HttpBridgePrinter(url)
+                printer = printer_ble.create_vault_printer(
+                    mode=mode,
+                    tailscale_ip=tailscale_ip,
+                    ble_address=ble_mac,
+                    printer_name=pname,
+                )
                 total_rows = int(img_copy.shape[0]) * copies
                 for c_idx in range(copies):
                     if self._job_cancel.is_set():
                         raise printer_ble.PrintCancelledError("Đã hủy lệnh in.")
                     off = c_idx * int(img_copy.shape[0])
-                    bridge.print_ribbon_sync(
+                    printer.print_ribbon_sync(
                         img_copy,
                         energy=energy,
                         speed=speed,
@@ -1361,6 +1519,57 @@ class PaperVoidApp:
                 zeroize(img_copy)
 
         self._job_thread = threading.Thread(target=worker, name="pv-print", daemon=True)
+        self._job_thread.start()
+        self._refresh_controls()
+
+    def print_test_strip(self) -> None:
+        """Print a quick 3-cm test strip directly or via phone bridge to verify printer."""
+        if self._busy():
+            return
+        mode = self.var_conn_mode.get()
+        tailscale_ip = self.var_tailscale_ip.get()
+        ble_mac = self.var_ble_mac.get()
+        pname = self.var_printer_name.get().strip() or "X5"
+        energy = int(self.var_energy.get())
+        speed = int(self.var_speed.get())
+
+        self._job_cancel.clear()
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+        self.set_toast("Đang in mẫu thử nghiệm X5…", ACCENT_BLUE)
+
+        def worker() -> None:
+            from PIL import ImageDraw
+            import datetime
+            test_img = Image.new("L", (384, 130), 255)
+            draw = ImageDraw.Draw(test_img)
+            draw.rectangle([6, 6, 378, 124], outline=0, width=2)
+            draw.text((16, 16), "PAPER-VOID -- X5 TEST STRIP", fill=0)
+            draw.text((16, 46), f"Mode: {mode.upper()} | Name: {pname}", fill=0)
+            draw.text((16, 76), f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", fill=0)
+            draw.text((16, 102), "Status: 203 DPI Thermal Link OK", fill=0)
+            img_arr = np.array(test_img, dtype=np.uint8)
+
+            try:
+                printer = printer_ble.create_vault_printer(
+                    mode=mode,
+                    tailscale_ip=tailscale_ip,
+                    ble_address=ble_mac,
+                    printer_name=pname,
+                )
+                printer.print_ribbon_sync(
+                    img_arr,
+                    energy=energy,
+                    speed=speed,
+                    feed_lines=48,
+                    cancel_event=self._job_cancel,
+                    status_callback=lambda m: self.post_event("toast", (m, ACCENT_BLUE)),
+                )
+                self.post_event("toast", ("In mẫu thử nghiệm X5 thành công!", STATUS_GREEN))
+            except Exception as exc:
+                self.post_event("job_err", str(exc))
+
+        self._job_thread = threading.Thread(target=worker, name="pv-test-print", daemon=True)
         self._job_thread.start()
         self._refresh_controls()
 
