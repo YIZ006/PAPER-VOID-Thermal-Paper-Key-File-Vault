@@ -327,10 +327,7 @@ class PaperVoidApp:
         for k, (_, lbl, _) in self._nav_rows.items():
             lbl.configure(text=f"  {icons.get(k, '')}   {nav_labels.get(k, '')}")
 
-        mode = self.var_conn_mode.get()
-        btn_txt = i18n.t("printer_btn_connect_direct", self.lang) if mode in ("direct_ble", "ble") else i18n.t("printer_btn_connect_bridge", self.lang)
-        self.btn_quick_connect.configure(text=btn_txt)
-        self.btn_quick_stop.configure(text=i18n.t("btn_turn_off_bridge", self.lang))
+        self._update_conn_mode_ui()
         self.lbl_sidebar_tagline.configure(text=i18n.t("sidebar_tagline", self.lang))
         self.btn_cancel_job.configure(text=i18n.t("btn_cancel_job", self.lang))
 
@@ -1154,11 +1151,41 @@ class PaperVoidApp:
 
     def _update_conn_mode_ui(self, *args: Any) -> None:
         mode = self.var_conn_mode.get()
-        btn_txt = i18n.t("printer_btn_connect_direct", self.lang) if mode in ("direct_ble", "ble") else i18n.t("printer_btn_connect_bridge", self.lang)
+        is_direct = mode in ("direct_ble", "ble")
+        if self._bridge_connected:
+            btn_txt = i18n.t("printer_btn_disconnect", self.lang)
+            btn_bg = "#16A34A"
+            btn_hover = "#DC2626"
+        else:
+            btn_txt = i18n.t("printer_btn_connect_direct", self.lang) if is_direct else i18n.t("printer_btn_connect_bridge", self.lang)
+            btn_bg = ACCENT_BLUE
+            btn_hover = ACCENT_BLUE_HOVER
+
         if hasattr(self, "btn_quick_connect"):
-            self.btn_quick_connect.configure(text=btn_txt)
+            self.btn_quick_connect.configure(text=btn_txt, bg=btn_bg, activebackground=btn_hover)
         if hasattr(self, "btn_page_connect"):
-            self.btn_page_connect.configure(text=btn_txt)
+            self.btn_page_connect.configure(text=btn_txt, bg=btn_bg, activebackground=btn_hover)
+
+        if hasattr(self, "btn_quick_stop"):
+            if is_direct:
+                if self._bridge_connected:
+                    self.btn_quick_stop.configure(
+                        text=i18n.t("printer_btn_test", self.lang),
+                        command=self.print_test_strip,
+                        bg="#4B5563",
+                    )
+                else:
+                    self.btn_quick_stop.configure(
+                        text=i18n.t("printer_btn_scan_ble", self.lang),
+                        command=self.on_click_scan_ble,
+                        bg="#4B5563",
+                    )
+            else:
+                self.btn_quick_stop.configure(
+                    text=i18n.t("btn_turn_off_bridge", self.lang),
+                    command=self.stop_phone_bridge,
+                    bg=DANGER_RED,
+                )
 
     def on_click_detect_ip(self) -> None:
         ip = auto_detect_phone_ip()
@@ -1208,6 +1235,9 @@ class PaperVoidApp:
 
     def connect_printer(self) -> None:
         if self._busy():
+            return
+        if self._bridge_connected:
+            self.stop_phone_bridge()
             return
         mode = self.var_conn_mode.get()
         if mode in ("direct_ble", "ble"):
