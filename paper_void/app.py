@@ -28,6 +28,7 @@ import numpy as np
 import codec
 import printer_ble
 import vault
+import i18n
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -102,6 +103,7 @@ class PaperVoidApp:
         if root is None:
             root = self._create_root()
         self.root = root
+        self.lang = i18n.detect_default_language()
         self.dnd_active = bool(HAS_DND and isinstance(root, TkinterDnD.Tk)) if HAS_DND else False
 
         self._events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
@@ -151,7 +153,7 @@ class PaperVoidApp:
         return tk.Tk()
 
     def _build_style(self) -> None:
-        self.root.title(APP_TITLE)
+        self.root.title(i18n.t("app_title", self.lang))
         self.root.geometry("1040x680")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_WINDOW)
@@ -197,7 +199,7 @@ class PaperVoidApp:
 
         toast_row = tk.Frame(bottom, bg=BG_WINDOW)
         toast_row.pack(fill=tk.X)
-        self.var_toast = tk.StringVar(value="Sẵn sàng — Chỉ dùng Paper-Key Vault (1 thẻ 8.4 cm cho mọi file MB/GB)")
+        self.var_toast = tk.StringVar(value=i18n.t("toast_ready", self.lang))
         self.toast_lbl = tk.Label(
             toast_row,
             textvariable=self.var_toast,
@@ -211,7 +213,7 @@ class PaperVoidApp:
 
         self.btn_cancel_job = tk.Button(
             toast_row,
-            text="Hủy tác vụ",
+            text=i18n.t("btn_cancel_job", self.lang),
             command=self.cancel_active_job,
             bg="#FFFFFF",
             fg=DANGER_RED,
@@ -235,9 +237,73 @@ class PaperVoidApp:
         self.pages["shred"] = self._build_shred_page(self.page_host)
         self.pages["printer"] = self._build_printer_page(self.page_host)
 
+    def switch_language(self, new_lang: str) -> None:
+        if new_lang not in ("en", "vi", "zh") or new_lang == self.lang:
+            return
+        self.lang = new_lang
+        i18n.save_language_preference(new_lang)
+        self.root.title(i18n.t("app_title", self.lang))
+
+        # Update language selector buttons appearance
+        for c, b in self._lang_btns.items():
+            active = (c == self.lang)
+            b.configure(
+                bg=ACCENT_BLUE if active else "#FFFFFF",
+                fg="#FFFFFF" if active else FG_PRIMARY,
+                font=("Segoe UI", 8, "bold" if active else "normal"),
+            )
+
+        # Update sidebar texts
+        nav_labels = {
+            "vault": i18n.t("nav_vault", self.lang),
+            "unlock": i18n.t("nav_unlock", self.lang),
+            "shred": i18n.t("nav_shred", self.lang),
+            "printer": i18n.t("nav_printer", self.lang),
+        }
+        icons = {"vault": "🔐", "unlock": "🔓", "shred": "🗑", "printer": "📱"}
+        for k, (_, lbl, _) in self._nav_rows.items():
+            lbl.configure(text=f"  {icons.get(k, '')}   {nav_labels.get(k, '')}")
+
+        self.btn_quick_connect.configure(text=i18n.t("btn_turn_on_bridge", self.lang))
+        self.btn_quick_stop.configure(text=i18n.t("btn_turn_off_bridge", self.lang))
+        self.lbl_sidebar_tagline.configure(text=i18n.t("sidebar_tagline", self.lang))
+        self.btn_cancel_job.configure(text=i18n.t("btn_cancel_job", self.lang))
+
+        if self._bridge_connected:
+            self.var_sidebar_status.set(i18n.t("sidebar_status_connected", self.lang, self._bridge_printer_name or "X5"))
+        else:
+            self.var_sidebar_status.set(i18n.t("sidebar_status_disconnected", self.lang))
+
+        # Rebuild all 4 pages
+        for frame in self.pages.values():
+            frame.destroy()
+        self.pages.clear()
+        self.pages["vault"] = self._build_vault_page(self.page_host)
+        self.pages["unlock"] = self._build_unlock_page(self.page_host)
+        self.pages["shred"] = self._build_shred_page(self.page_host)
+        self.pages["printer"] = self._build_printer_page(self.page_host)
+
+        # Restore state in rebuilt pages
+        if self._vault_src_path:
+            size_txt = format_bytes(os.path.getsize(self._vault_src_path)) if os.path.isfile(self._vault_src_path) else ""
+            self.var_vault_src.set(i18n.t("vault_file_selected", self.lang, os.path.basename(self._vault_src_path), size_txt))
+        if self._vault_items:
+            self._render_vault_rows()
+
+        if self._unlock_vault_path:
+            self.var_unlock_vault.set(os.path.basename(self._unlock_vault_path))
+        if self._unlock_scanned_key:
+            self.var_unlock_key_status.set(i18n.t("unlock_key_loaded", self.lang, self._unlock_scanned_key.vault_id_hex[:12] + "…"))
+
+        if self._shred_queue:
+            self._render_shred_rows()
+
+        self._select_page(self._current_page)
+        self.set_toast(i18n.t("toast_ready", self.lang))
+
     def _build_sidebar(self) -> None:
         # Brand header (ServBay logo look)
-        brand = tk.Frame(self.sidebar, bg=BG_SIDEBAR, pady=18, padx=16)
+        brand = tk.Frame(self.sidebar, bg=BG_SIDEBAR, pady=14, padx=16)
         brand.pack(fill=tk.X)
 
         logo = tk.Canvas(brand, width=28, height=28, bg=BG_SIDEBAR, highlightthickness=0)
@@ -250,13 +316,37 @@ class PaperVoidApp:
             font=("Georgia", 13, "bold"),
         ).pack(side=tk.LEFT)
 
+        # Language Switcher: [🌐 EN | VI | 中文]
+        lang_box = tk.Frame(self.sidebar, bg=BG_SIDEBAR, padx=16, pady=2)
+        lang_box.pack(fill=tk.X, pady=(0, 8))
+        self._lang_btns = {}
+        for lcode, llabel in [("en", "EN"), ("vi", "VI"), ("zh", "中文")]:
+            active = (lcode == self.lang)
+            btn = tk.Button(
+                lang_box,
+                text=llabel,
+                command=lambda c=lcode: self.switch_language(c),
+                bg=ACCENT_BLUE if active else "#FFFFFF",
+                fg="#FFFFFF" if active else FG_PRIMARY,
+                activebackground=ACCENT_BLUE_HOVER,
+                activeforeground="#FFFFFF",
+                font=("Segoe UI", 8, "bold" if active else "normal"),
+                relief=tk.SOLID,
+                bd=1,
+                padx=6,
+                pady=1,
+                cursor="hand2",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 4))
+            self._lang_btns[lcode] = btn
+
         # Nav items
         self._nav_rows: dict[str, tuple[tk.Frame, tk.Label, tk.Frame]] = {}
         nav_defs = [
-            ("vault", "🔐", "Khóa File (Vault)"),
-            ("unlock", "🔓", "Mở Khóa (Unlock)"),
-            ("shred", "🗑", "Hủy File (Shred)"),
-            ("printer", "📱", "Máy In X5 (ĐT)"),
+            ("vault", "🔐", i18n.t("nav_vault", self.lang)),
+            ("unlock", "🔓", i18n.t("nav_unlock", self.lang)),
+            ("shred", "🗑", i18n.t("nav_shred", self.lang)),
+            ("printer", "📱", i18n.t("nav_printer", self.lang)),
         ]
         nav_box = tk.Frame(self.sidebar, bg=BG_SIDEBAR)
         nav_box.pack(fill=tk.X, pady=(4, 0))
@@ -290,7 +380,7 @@ class PaperVoidApp:
         foot = tk.Frame(self.sidebar, bg=BG_SIDEBAR, padx=14, pady=14)
         foot.pack(fill=tk.X)
 
-        self.var_sidebar_status = tk.StringVar(value="○ X5: Chưa kết nối ĐT")
+        self.var_sidebar_status = tk.StringVar(value=i18n.t("sidebar_status_disconnected", self.lang))
         self.lbl_sidebar_status = tk.Label(
             foot,
             textvariable=self.var_sidebar_status,
@@ -307,7 +397,7 @@ class PaperVoidApp:
 
         self.btn_quick_connect = tk.Button(
             foot,
-            text="⚡ Bật App ĐT & Nối X5",
+            text=i18n.t("btn_turn_on_bridge", self.lang),
             command=self.connect_phone_bridge,
             bg=ACCENT_BLUE,
             fg="#FFFFFF",
@@ -322,7 +412,7 @@ class PaperVoidApp:
 
         self.btn_quick_stop = tk.Button(
             foot,
-            text="⏹ Tắt App ĐT",
+            text=i18n.t("btn_turn_off_bridge", self.lang),
             command=self.stop_phone_bridge,
             bg=DANGER_RED,
             fg="#FFFFFF",
@@ -335,14 +425,15 @@ class PaperVoidApp:
         )
         self.btn_quick_stop.pack(fill=tk.X)
 
-        tk.Label(
+        self.lbl_sidebar_tagline = tk.Label(
             foot,
-            text="Hybrid AES-256-GCM\n1 Thẻ Khóa ~8.4 cm",
+            text=i18n.t("sidebar_tagline", self.lang),
             bg=BG_SIDEBAR,
             fg=FG_MUTED,
             font=("Segoe UI", 8),
             justify=tk.CENTER,
-        ).pack(pady=(10, 0))
+        )
+        self.lbl_sidebar_tagline.pack(pady=(10, 0))
 
     def _select_page(self, key: str) -> None:
         self._current_page = key
@@ -399,8 +490,8 @@ class PaperVoidApp:
         page = tk.Frame(parent, bg=BG_WINDOW)
         self._make_page_header(
             page,
-            "Paper-Key Vault",
-            "Mã hóa từng khối 1 MB (AES-256-GCM) → In duy nhất 1 Thẻ Khóa ~8.4 cm trên máy in nhiệt X5",
+            i18n.t("vault_page_title", self.lang),
+            i18n.t("vault_page_subtitle", self.lang),
             refresh_cmd=self.connect_phone_bridge,
         )
 
@@ -413,7 +504,7 @@ class PaperVoidApp:
 
         self.btn_pick_vault_src = tk.Button(
             r1,
-            text="+ Chọn File (MB / GB)",
+            text=i18n.t("vault_choose_file", self.lang),
             command=self.pick_vault_source,
             bg="#FFFFFF",
             fg=FG_PRIMARY,
@@ -429,9 +520,7 @@ class PaperVoidApp:
         self.btn_pick_vault_src.pack(side=tk.LEFT)
 
         self.var_vault_src = tk.StringVar(
-            value="Kéo-thả file bất kỳ vào đây hoặc bấm nút bên trái…"
-            if self.dnd_active
-            else "Chưa chọn file — bấm '+ Chọn File (MB / GB)'"
+            value=i18n.t("vault_drop_hint", self.lang)
         )
         self.lbl_vault_drop = tk.Label(
             r1,
@@ -456,7 +545,7 @@ class PaperVoidApp:
         r2 = tk.Frame(card, bg=BG_CARD)
         r2.pack(fill=tk.X, pady=(10, 0))
 
-        tk.Label(r2, text="Mật khẩu 2FA (tùy chọn):", bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Label(r2, text=i18n.t("vault_2fa_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.var_lock_pw = tk.StringVar()
         tk.Entry(
             r2, textvariable=self.var_lock_pw, show="●", width=26,
@@ -466,7 +555,7 @@ class PaperVoidApp:
 
         self.btn_lock_now = tk.Button(
             r2,
-            text="🔒 Mã Hóa 1 MB/khối → Tạo Thẻ 8.4 cm",
+            text=i18n.t("vault_btn_lock", self.lang),
             command=self.start_vault_lock,
             bg=ACCENT_BLUE,
             fg="#FFFFFF",
@@ -485,10 +574,10 @@ class PaperVoidApp:
         # Table header (ServBay Package Name | Size | Vault ID | Status | Control)
         cols = tk.Frame(page, bg=BG_WINDOW, padx=14)
         cols.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(cols, text="Tên File & Vault", bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=30, anchor="w").pack(side=tk.LEFT)
-        tk.Label(cols, text="Dung Lượng", bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=11, anchor="w").pack(side=tk.LEFT)
-        tk.Label(cols, text="Trạng Thái Thẻ", bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=18, anchor="w").pack(side=tk.LEFT)
-        tk.Label(cols, text="Điều Khiển (In & SHRED)", bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), anchor="e").pack(side=tk.RIGHT)
+        tk.Label(cols, text=i18n.t("vault_th_filename", self.lang), bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=30, anchor="w").pack(side=tk.LEFT)
+        tk.Label(cols, text=i18n.t("vault_th_size", self.lang), bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=11, anchor="w").pack(side=tk.LEFT)
+        tk.Label(cols, text=i18n.t("vault_th_status", self.lang), bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), width=18, anchor="w").pack(side=tk.LEFT)
+        tk.Label(cols, text=i18n.t("vault_th_actions", self.lang), bg=BG_WINDOW, fg=FG_PRIMARY, font=("Segoe UI", 9, "bold"), anchor="e").pack(side=tk.RIGHT)
 
         # Scrollable list of ServBay white card rows
         list_wrap = tk.Frame(page, bg=BG_WINDOW)
@@ -568,19 +657,19 @@ class PaperVoidApp:
             btns.pack(side=tk.RIGHT)
 
             tk.Button(
-                btns, text="👁 Xem", command=lambda i=idx: self.preview_vault_item(i),
+                btns, text=i18n.t("vault_btn_view", self.lang), command=lambda i=idx: self.preview_vault_item(i),
                 bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
                 relief=tk.SOLID, bd=1, font=("Segoe UI", 8, "bold"), padx=8, pady=3, cursor="hand2",
             ).pack(side=tk.LEFT, padx=2)
 
             tk.Button(
-                btns, text="🖨 In 1", command=lambda i=idx: self.print_vault_item(i, copies=1),
+                btns, text=i18n.t("vault_btn_print1", self.lang), command=lambda i=idx: self.print_vault_item(i, copies=1),
                 bg=ACCENT_BLUE, fg="#FFFFFF", activebackground=ACCENT_BLUE_HOVER, activeforeground="#FFFFFF",
                 relief=tk.FLAT, font=("Segoe UI", 8, "bold"), padx=9, pady=4, cursor="hand2",
             ).pack(side=tk.LEFT, padx=2)
 
             tk.Button(
-                btns, text="🖨 In 2", command=lambda i=idx: self.print_vault_item(i, copies=2),
+                btns, text=i18n.t("vault_btn_print2", self.lang), command=lambda i=idx: self.print_vault_item(i, copies=2),
                 bg=STATUS_GREEN, fg="#FFFFFF", activebackground="#166534", activeforeground="#FFFFFF",
                 relief=tk.FLAT, font=("Segoe UI", 8, "bold"), padx=9, pady=4, cursor="hand2",
             ).pack(side=tk.LEFT, padx=2)
@@ -588,7 +677,7 @@ class PaperVoidApp:
             shred_enabled = (not item.shredded) and os.path.isfile(item.source_path)
             tk.Button(
                 btns,
-                text="🗑 SHRED",
+                text=i18n.t("vault_btn_shred", self.lang),
                 command=lambda i=idx: self.shred_vault_item(i),
                 bg=DANGER_RED if shred_enabled else "#E5E7EB",
                 fg="#FFFFFF" if shred_enabled else BTN_DISABLED_FG,
@@ -609,43 +698,43 @@ class PaperVoidApp:
         page = tk.Frame(parent, bg=BG_WINDOW)
         self._make_page_header(
             page,
-            "Mở Khóa Vault",
-            "Chọn file .pvvault → Nạp thẻ khóa từ Ảnh/Video điện thoại HOẶC gõ 3 hàng mã Base32 trong khung đen",
+            i18n.t("unlock_page_title", self.lang),
+            i18n.t("unlock_page_subtitle", self.lang),
         )
 
         # Card 1: Select .pvvault
         c1 = tk.Frame(page, bg=BG_CARD, highlightbackground=BORDER_CARD, highlightthickness=1, padx=14, pady=12)
         c1.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(c1, text="Bước 1 — Chọn file đã mã hóa (.pvvault)", bg=BG_CARD, fg=FG_PRIMARY,
+        tk.Label(c1, text=i18n.t("unlock_step1", self.lang), bg=BG_CARD, fg=FG_PRIMARY,
                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
         r1 = tk.Frame(c1, bg=BG_CARD)
         r1.pack(fill=tk.X)
         tk.Button(
-            r1, text="Chọn file .pvvault…", command=self.pick_unlock_vault,
+            r1, text=i18n.t("unlock_btn_browse_vault", self.lang), command=self.pick_unlock_vault,
             bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
             relief=tk.SOLID, bd=1, font=("Segoe UI", 9, "bold"), padx=12, pady=5, cursor="hand2",
         ).pack(side=tk.LEFT)
-        self.var_unlock_vault = tk.StringVar(value="Chưa chọn file .pvvault")
+        self.var_unlock_vault = tk.StringVar(value=i18n.t("unlock_no_vault", self.lang))
         tk.Label(r1, textvariable=self.var_unlock_vault, bg=BG_CARD, fg=FG_SECONDARY,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=12)
 
         # Card 2: Key source (Phone Live Scanner via USB/Tailscale OR Photo/Video OR Base32)
         c2 = tk.Frame(page, bg=BG_CARD, highlightbackground=BORDER_CARD, highlightthickness=1, padx=14, pady=12)
         c2.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(c2, text="Bước 2 — Quét mã thẻ bằng App Điện Thoại (hoặc Ảnh / Base32)", bg=BG_CARD, fg=FG_PRIMARY,
+        tk.Label(c2, text=i18n.t("unlock_step2", self.lang), bg=BG_CARD, fg=FG_PRIMARY,
                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
 
         # Connection mode selector: USB Cable vs Tailscale
         r2_conn = tk.Frame(c2, bg=BG_CARD)
         r2_conn.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(r2_conn, text="Kết nối ĐT:", bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Label(r2_conn, text=i18n.t("unlock_conn_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         tk.Radiobutton(
-            r2_conn, text="🔌 Qua Cáp USB (ADB)", variable=self.var_conn_mode, value="usb",
+            r2_conn, text=i18n.t("unlock_conn_usb", self.lang), variable=self.var_conn_mode, value="usb",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(8, 10))
         tk.Radiobutton(
-            r2_conn, text="🌐 Qua Tailscale (IP ĐT):", variable=self.var_conn_mode, value="tailscale",
+            r2_conn, text=i18n.t("unlock_conn_tailscale", self.lang), variable=self.var_conn_mode, value="tailscale",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
@@ -654,28 +743,28 @@ class PaperVoidApp:
             bg=BG_INPUT, fg=FG_PRIMARY, relief=tk.FLAT,
             highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
         ).pack(side=tk.LEFT, ipady=3)
-        tk.Label(r2_conn, text=" (vd: 100.x.y.z)", bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 8)).pack(side=tk.LEFT)
+        tk.Label(r2_conn, text=i18n.t("unlock_tailscale_hint", self.lang), bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 8)).pack(side=tk.LEFT)
 
         r2a = tk.Frame(c2, bg=BG_CARD)
         r2a.pack(fill=tk.X, pady=(0, 8))
         self.btn_phone_scan = tk.Button(
-            r2a, text="📱 Mở App Quét Mã Trên Điện Thoại", command=self.start_phone_live_scan,
+            r2a, text=i18n.t("unlock_btn_scan_phone", self.lang), command=self.start_phone_live_scan,
             bg=ACCENT_BLUE, fg="#FFFFFF", activebackground=ACCENT_BLUE_HOVER, activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=14, pady=6, cursor="hand2",
         )
         self.btn_phone_scan.pack(side=tk.LEFT)
         tk.Button(
-            r2a, text="📷 Hoặc Chọn Ảnh / Video", command=self.scan_unlock_key_media,
+            r2a, text=i18n.t("unlock_btn_browse_photo", self.lang), command=self.scan_unlock_key_media,
             bg=STATUS_GREEN, fg="#FFFFFF", activebackground="#166534", activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=12, pady=6, cursor="hand2",
         ).pack(side=tk.LEFT, padx=(8, 0))
-        self.var_unlock_key_status = tk.StringVar(value="Chưa quét thẻ khóa")
+        self.var_unlock_key_status = tk.StringVar(value=i18n.t("unlock_key_unscanned", self.lang))
         tk.Label(r2a, textvariable=self.var_unlock_key_status, bg=BG_CARD, fg=FG_MUTED,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=10)
 
         tk.Label(
             c2,
-            text="Hoặc gõ nối tiếp 3 hàng mã Base32 bên trong khung viền đen (11 cụm × 5 ký tự, không phân biệt hoa/thường):",
+            text=i18n.t("unlock_or_manual", self.lang),
             bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(2, 4))
         self.var_unlock_base32 = tk.StringVar()
@@ -699,7 +788,7 @@ class PaperVoidApp:
         ).pack(side=tk.LEFT, padx=8, ipady=4)
 
         self.btn_unlock_now = tk.Button(
-            r3, text="🔓 Giải Mã 1 MB/khối & Khôi Phục File", command=self.start_vault_unlock,
+            r3, text=i18n.t("unlock_btn_decrypt", self.lang), command=self.start_vault_unlock,
             bg=ACCENT_BLUE, fg="#FFFFFF", disabledforeground="#CBD5E1",
             activebackground=ACCENT_BLUE_HOVER, activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=14, pady=6, cursor="hand2",
@@ -715,15 +804,14 @@ class PaperVoidApp:
         page = tk.Frame(parent, bg=BG_WINDOW)
         self._make_page_header(
             page,
-            "Hủy Diệt File (Secure Shred)",
-            "Ghi đè 4 lượt (urandom → 0xFF → urandom → 0x00) + fsync + truncate + đổi tên 2 lần + bỏ qua Thùng rác",
+            i18n.t("shred_page_title", self.lang),
+            i18n.t("shred_page_subtitle", self.lang),
         )
 
         # SSD warning banner
         warn = tk.Label(
             page,
-            text="⚠ Lưu ý SSD/NVMe: Ghi đè chặn sạch Thùng rác & Recuva, nhưng SSD có wear-leveling nên nên bật BitLocker "
-                 "hoặc chạy PowerShell (Admin): Optimize-Volume -DriveLetter D -ReTrim sau khi hủy.",
+            text=i18n.t("shred_ssd_note", self.lang),
             bg=STATUS_AMBER_BG, fg=STATUS_AMBER, font=("Segoe UI", 9),
             anchor="w", justify=tk.LEFT, wraplength=760, padx=12, pady=8,
         )
@@ -733,20 +821,20 @@ class PaperVoidApp:
         bar.pack(fill=tk.X, pady=(0, 10))
 
         tk.Button(
-            bar, text="+ Thêm File Cần Hủy…", command=self.add_shred_files,
+            bar, text=i18n.t("shred_btn_add", self.lang), command=self.add_shred_files,
             bg=DANGER_RED, fg="#FFFFFF", activebackground="#991B1B", activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=12, pady=6, cursor="hand2",
         ).pack(side=tk.LEFT)
 
         tk.Button(
-            bar, text="Xóa danh sách chờ", command=self.clear_shred_queue,
+            bar, text=i18n.t("shred_btn_clear", self.lang), command=self.clear_shred_queue,
             bg="#FFFFFF", fg=FG_PRIMARY, activebackground="#FFFFCC",
             relief=tk.SOLID, bd=1, font=("Segoe UI", 9, "bold"), padx=10, pady=5, cursor="hand2",
         ).pack(side=tk.LEFT, padx=8)
 
         self.lbl_shred_drop = tk.Label(
             bar,
-            text="Hoặc kéo-thả file vào đây để đưa vào hàng chờ SHRED" if self.dnd_active else "",
+            text=i18n.t("shred_drop_hint", self.lang) if self.dnd_active else "",
             bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 9),
         )
         self.lbl_shred_drop.pack(side=tk.RIGHT)
@@ -774,7 +862,7 @@ class PaperVoidApp:
             empty.pack(fill=tk.X)
             tk.Label(
                 empty,
-                text="Hàng chờ hủy file đang trống. Mọi lệnh SHRED đều yêu cầu xác nhận 2 bước (gõ chữ SHRED).",
+                text=i18n.t("shred_empty_queue", self.lang),
                 bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 9),
             ).pack()
             return
@@ -795,14 +883,14 @@ class PaperVoidApp:
                      width=14, anchor="w").pack(side=tk.LEFT)
 
             tk.Button(
-                row, text="🗑 SHRED NGAY", command=lambda p=fpath: self._execute_shred_from_queue(p),
+                row, text=i18n.t("shred_btn_action", self.lang), command=lambda p=fpath: self._execute_shred_from_queue(p),
                 bg=DANGER_RED, fg="#FFFFFF", activebackground="#B91C1C", activeforeground="#FFFFFF",
                 relief=tk.FLAT, font=("Segoe UI", 8, "bold"), padx=10, pady=4, cursor="hand2",
                 state=tk.NORMAL if exists else tk.DISABLED,
             ).pack(side=tk.RIGHT)
 
             tk.Button(
-                row, text="Bỏ", command=lambda i=idx: self._remove_shred_index(i),
+                row, text=i18n.t("shred_btn_remove", self.lang), command=lambda i=idx: self._remove_shred_index(i),
                 bg="#ECECF0", fg=FG_SECONDARY, activebackground="#DCDCE2",
                 relief=tk.FLAT, font=("Segoe UI", 8), padx=8, pady=4, cursor="hand2",
             ).pack(side=tk.RIGHT, padx=(0, 6))
@@ -813,8 +901,8 @@ class PaperVoidApp:
         page = tk.Frame(parent, bg=BG_WINDOW)
         self._make_page_header(
             page,
-            "Máy In Nhiệt X5 (Cầu Nối Điện Thoại)",
-            "Bấm 1 nút để tự chạy ADB forward, mở app TinyPrintBridge trên điện thoại và kiểm tra kết nối máy in X5",
+            i18n.t("printer_page_title", self.lang),
+            i18n.t("printer_page_subtitle", self.lang),
             refresh_cmd=self.connect_phone_bridge,
         )
 
@@ -824,20 +912,20 @@ class PaperVoidApp:
 
         r1_top = tk.Frame(c1, bg=BG_CARD)
         r1_top.pack(fill=tk.X)
-        tk.Label(r1_top, text="Kết nối cầu nối điện thoại (USB / Tailscale)", bg=BG_CARD, fg=FG_PRIMARY,
+        tk.Label(r1_top, text=i18n.t("printer_conn_section", self.lang), bg=BG_CARD, fg=FG_PRIMARY,
                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
         tk.Button(
-            r1_top, text="⏹ Tắt App ĐT", command=self.stop_phone_bridge,
+            r1_top, text=i18n.t("btn_turn_off_bridge", self.lang), command=self.stop_phone_bridge,
             bg=DANGER_RED, fg="#FFFFFF", activebackground="#991B1B", activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=12, pady=6, cursor="hand2",
         ).pack(side=tk.RIGHT, padx=(6, 0))
         tk.Button(
-            r1_top, text="⚡ Bật App ĐT & Nối X5", command=self.connect_phone_bridge,
+            r1_top, text=i18n.t("btn_turn_on_bridge", self.lang), command=self.connect_phone_bridge,
             bg=ACCENT_BLUE, fg="#FFFFFF", activebackground=ACCENT_BLUE_HOVER, activeforeground="#FFFFFF",
             relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=14, pady=6, cursor="hand2",
         ).pack(side=tk.RIGHT)
 
-        self.var_printer_detail = tk.StringVar(value="Trạng thái: Chưa kết nối — bấm nút bên trên để bật app trên điện thoại.")
+        self.var_printer_detail = tk.StringVar(value=i18n.t("printer_status_disconnected", self.lang))
         tk.Label(
             c1, textvariable=self.var_printer_detail, bg=BG_CARD, fg=FG_SECONDARY,
             font=("Segoe UI", 9), anchor="w", justify=tk.LEFT, wraplength=700,
@@ -846,12 +934,12 @@ class PaperVoidApp:
         r2 = tk.Frame(c1, bg=BG_CARD)
         r2.pack(fill=tk.X, pady=(8, 0))
         tk.Radiobutton(
-            r2, text="🔌 Cáp USB (127.0.0.1:9100)", variable=self.var_conn_mode, value="usb",
+            r2, text=i18n.t("printer_conn_usb", self.lang), variable=self.var_conn_mode, value="usb",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 12))
         tk.Radiobutton(
-            r2, text="🌐 Tailscale IP:", variable=self.var_conn_mode, value="tailscale",
+            r2, text=i18n.t("printer_conn_tailscale", self.lang), variable=self.var_conn_mode, value="tailscale",
             bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_CARD, activebackground=BG_CARD,
             font=("Segoe UI", 9, "bold"), cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 6))
@@ -860,7 +948,7 @@ class PaperVoidApp:
             relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
         ).pack(side=tk.LEFT, padx=(0, 16), ipady=4)
 
-        tk.Label(r2, text="Tên máy in:", bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Label(r2, text=i18n.t("printer_name_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         tk.Entry(
             r2, textvariable=self.var_printer_name, width=10, bg=BG_INPUT, fg=FG_PRIMARY,
             relief=tk.FLAT, highlightbackground=BORDER_SUBTLE, highlightthickness=1, font=("Consolas", 9),
@@ -869,12 +957,12 @@ class PaperVoidApp:
         # Card 2: Thermal safety controls
         c2 = tk.Frame(page, bg=BG_CARD, highlightbackground=BORDER_CARD, highlightthickness=1, padx=14, pady=14)
         c2.pack(fill=tk.X)
-        tk.Label(c2, text="Thông số đầu in nhiệt (đã tối ưu in từ từ 64 dòng/nhịp, nghỉ mát 0.28s)",
+        tk.Label(c2, text=i18n.t("printer_head_settings", self.lang),
                  bg=BG_CARD, fg=FG_PRIMARY, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 10))
 
         e_row = tk.Frame(c2, bg=BG_CARD)
         e_row.pack(fill=tk.X, pady=4)
-        tk.Label(e_row, text="Độ đậm nhiệt (Energy):", bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), width=22, anchor="w").pack(side=tk.LEFT)
+        tk.Label(e_row, text=i18n.t("printer_energy_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), width=22, anchor="w").pack(side=tk.LEFT)
         self.lbl_energy = tk.Label(e_row, text="20000", bg=BG_CARD, fg=ACCENT_BLUE, font=("Consolas", 10, "bold"), width=7)
         self.scale_energy = ttk.Scale(e_row, from_=8000, to=38000, orient=tk.HORIZONTAL,
                                       command=self._on_energy_scale, length=320)
@@ -884,7 +972,7 @@ class PaperVoidApp:
 
         s_row = tk.Frame(c2, bg=BG_CARD)
         s_row.pack(fill=tk.X, pady=4)
-        tk.Label(s_row, text="Tốc độ kéo giấy (Speed):", bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), width=22, anchor="w").pack(side=tk.LEFT)
+        tk.Label(s_row, text=i18n.t("printer_speed_label", self.lang), bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), width=22, anchor="w").pack(side=tk.LEFT)
         self.lbl_speed = tk.Label(s_row, text="30", bg=BG_CARD, fg=ACCENT_BLUE, font=("Consolas", 10, "bold"), width=7)
         self.scale_speed = ttk.Scale(s_row, from_=15, to=45, orient=tk.HORIZONTAL,
                                      command=self._on_speed_scale, length=320)
